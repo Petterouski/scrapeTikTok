@@ -3,6 +3,7 @@ from datetime import datetime, timezone
  
 import streamlit as st
  
+from analisis import MODELOS, RASGOS, ErrorAnalisis, analizar, preparar_textos
 from scraper import MAX_COMENTARIOS, MAX_PUBLICACIONES, ErrorScrape, consultar, validar_usuario
  
 st.set_page_config(page_title="ScrapeTikTok", page_icon="🎵", layout="centered")
@@ -84,6 +85,38 @@ def mostrar_publicacion(post, indice, demo):
         mostrar_comentarios(post)
  
  
+def nivel(puntaje):
+    return "Bajo" if puntaje < 40 else "Alto" if puntaje >= 60 else "Medio"
+ 
+ 
+def mostrar_rasgos(analisis, tipo):
+    """Una barra por rasgo Big Five, con su justificación."""
+    st.caption(f"{tipo}: {analisis['n']} · Confianza: {analisis['confianza']} · Modelo: {analisis['modelo']}")
+    if analisis["confianza"] == "baja":
+        st.warning("Muestra pequeña: toma este resultado con mucha cautela.")
+    for clave, nombre in RASGOS.items():
+        rasgo = analisis["rasgos"][clave]
+        st.progress(rasgo["puntaje"] / 100, text=f"{nombre}: {rasgo['puntaje']}/100 ({nivel(rasgo['puntaje'])})")
+        st.caption(rasgo["justificacion"])
+ 
+ 
+def mostrar_dashboard(resultado):
+    st.subheader("🧠 Análisis Big Five")
+    st.caption("Estimación aproximada del lenguaje hecha por un modelo local. No es un test psicométrico "
+               "ni un diagnóstico, y los comentarios son de la audiencia, no del dueño de la cuenta.")
+    tab_audiencia, tab_creador = st.tabs(["👥 Audiencia (comentarios)", "✍️ Creador (descripciones)"])
+    with tab_audiencia:
+        mostrar_rasgos(resultado["audiencia"], "Comentarios analizados")
+        st.markdown("#### 💬 Recomendaciones de comunicación")
+        for recomendacion in resultado["audiencia"]["recomendaciones"] or ["El modelo no dio recomendaciones."]:
+            st.markdown(f"- {recomendacion}")
+    with tab_creador:
+        if resultado["creador"]:
+            mostrar_rasgos(resultado["creador"], "Descripciones analizadas")
+        else:
+            st.info("Hay muy pocas descripciones (mínimo 3) para analizar al creador.")
+ 
+ 
 # ------------------------------- Barra lateral ------------------------------ #
 with st.sidebar:
     st.header("Opciones")
@@ -91,9 +124,12 @@ with st.sidebar:
     incluir_comentarios = st.checkbox("Incluir comentarios",
                                       help="Más lento: abre cada video y lee sus comentarios principales.")
     comentarios_por_post = st.number_input("Comentarios por publicación", min_value=1, max_value=MAX_COMENTARIOS,
-                                           value=10, step=1, disabled=not incluir_comentarios)
+                                           value=30, step=1, disabled=not incluir_comentarios,
+                                           help="Para el análisis Big Five conviene tener al menos 30 en total.")
     mostrar_navegador = st.checkbox("Mostrar ventana del navegador",
                                     help="Útil si TikTok pide una verificación: la resuelves tú.")
+    st.divider()
+    modelo = st.selectbox("Modelo local (Ollama) para el Big Five", MODELOS)
  
 # --------------------------------- Principal -------------------------------- #
 st.title("🎵 ScrapeTikTok")
@@ -119,8 +155,10 @@ if enviar:
                                       int(comentarios_por_post), mostrar_navegador)
                 estado.update(label="Consulta terminada", state="complete", expanded=False)
         st.session_state["resultado"] = resultado
+        st.session_state.pop("analisis", None)  # un análisis viejo no corresponde a la consulta nueva
     except ErrorScrape as error:
         st.session_state.pop("resultado", None)
+        st.session_state.pop("analisis", None)
         st.error(str(error))
  
 resultado = st.session_state.get("resultado")
@@ -132,5 +170,34 @@ if resultado:
         st.success(f"✅ Datos reales de TikTok para @{resultado['usuario']}.")
     for aviso in resultado["avisos"]:
         st.info(aviso)
+ 
+    # ---- Análisis Big Five con el modelo local ----
+    comentarios = [c["texto"] for p in resultado["publicaciones"] for c in p["comentarios"]]
+    descripciones = [p["descripcion"] for p in resultado["publicaciones"] if p["descripcion"]]
+    if st.button("🧠 Analizar Big Five", type="primary", disabled=es_demo,
+                 help="Solo con datos reales. Usa el modelo local elegido en la barra lateral."):
+        try:
+            with st.status("Analizando con el modelo local… puede tardar de 1 a 3 minutos.",
+                           expanded=True) as estado:
+                st.write("Analizando la audiencia (comentarios)…")
+                audiencia = analizar(comentarios, "audiencia", modelo)
+                creador = None
+                if len(preparar_textos(descripciones)) >= 3:
+                    st.write("Analizando al creador (descripciones)…")
+                    creador = analizar(descripciones, "creador", modelo)
+                estado.update(label="Análisis terminado", state="complete", expanded=False)
+            st.session_state["analisis"] = {"audiencia": audiencia, "creador": creador}
+        except ErrorAnalisis as error:
+            st.error(str(error))
+            if not comentarios:
+                st.caption("Tip: marca «Incluir comentarios» y vuelve a consultar para tener textos que analizar.")
+    if es_demo:
+        st.caption("El análisis Big Five solo está disponible con datos reales.")
+    if "analisis" in st.session_state:
+        mostrar_dashboard(st.session_state["analisis"])
+ 
+    st.divider()
+    st.subheader("📱 Publicaciones")
     for numero, publicacion in enumerate(resultado["publicaciones"], start=1):
         mostrar_publicacion(publicacion, numero, demo=es_demo)
+ 

@@ -1,23 +1,23 @@
 """Interfaz de ScrapeTikTok. Ejecutar con: streamlit run app.py"""
 from datetime import datetime, timezone
-
+ 
 import streamlit as st
-
-from scraper import ErrorScrape, consultar, validar_usuario
-
+ 
+from scraper import MAX_COMENTARIOS, MAX_PUBLICACIONES, ErrorScrape, consultar, validar_usuario
+ 
 st.set_page_config(page_title="ScrapeTikTok", page_icon="🎵", layout="centered")
-
-
+ 
+ 
 def numero_txt(valor):
     return "No disponible" if valor is None else f"{valor:,}".replace(",", ".")
-
-
+ 
+ 
 def fecha_txt(segundos):
     if not segundos:
         return "Fecha no disponible"
     return datetime.fromtimestamp(segundos, tz=timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
-
-
+ 
+ 
 def datos_demo(usuario, cantidad):
     """Datos FICTICIOS para probar la interfaz sin TikTok."""
     posts = []
@@ -37,8 +37,8 @@ def datos_demo(usuario, cantidad):
         posts.append(post)
     return {"usuario": usuario, "fuente": "demo", "publicaciones": posts,
             "avisos": ["Estos datos son ficticios y sirven solo para probar la interfaz."]}
-
-
+ 
+ 
 def mostrar_comentarios(post):
     estado = post["estado_comentarios"]
     if estado == "no_solicitados":
@@ -57,8 +57,8 @@ def mostrar_comentarios(post):
             st.text(c["texto"])
             st.caption(f"{c['autor'] or 'autor desconocido'} · {fecha_txt(c['fecha'])}"
                        f" · Me gusta: {numero_txt(c['likes'])} · Respuestas: {numero_txt(c['respuestas'])}")
-
-
+ 
+ 
 def mostrar_publicacion(post, indice, demo):
     with st.container(border=True):
         col_img, col_info = st.columns([1, 3])
@@ -73,50 +73,56 @@ def mostrar_publicacion(post, indice, demo):
                 st.text("Descripción no disponible")
             else:
                 st.text(post["descripcion"] or "(sin descripción)")
-
+ 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Visualizaciones", numero_txt(post["vistas"]))
         c2.metric("Me gusta", numero_txt(post["likes"]))
         c3.metric("Comentarios (total)", numero_txt(post["comentarios_total"]))
         c4.metric("Compartidos", numero_txt(post["compartidos"]))
-
+ 
         st.link_button("Abrir en TikTok", post["url"], disabled=demo)
         mostrar_comentarios(post)
-
-
+ 
+ 
 # ------------------------------- Barra lateral ------------------------------ #
 with st.sidebar:
     st.header("Opciones")
     modo_demo = st.toggle("Modo demostración (datos ficticios)")
     incluir_comentarios = st.checkbox("Incluir comentarios",
-                                      help="Más lento. Sin sesión iniciada, TikTok suele no entregarlos.")
+                                      help="Más lento: abre cada video y lee sus comentarios principales.")
+    comentarios_por_post = st.number_input("Comentarios por publicación", min_value=1, max_value=MAX_COMENTARIOS,
+                                           value=10, step=1, disabled=not incluir_comentarios)
     mostrar_navegador = st.checkbox("Mostrar ventana del navegador",
                                     help="Útil si TikTok pide una verificación: la resuelves tú.")
-
+ 
 # --------------------------------- Principal -------------------------------- #
 st.title("🎵 ScrapeTikTok")
 st.write("Proyecto académico: consulta las últimas publicaciones públicas de una cuenta de TikTok, "
          "sus métricas y los comentarios que TikTok permita ver.")
-
+ 
 with st.form("consulta"):
     usuario = st.text_input("Usuario de TikTok", placeholder="@usuario")
-    cantidad = st.radio("Publicaciones a mostrar", [5, 10], horizontal=True)
+    cantidad = st.number_input("Número de publicaciones a mostrar", min_value=1, max_value=MAX_PUBLICACIONES,
+                               value=5, step=1,
+                               help="Sin iniciar sesión, TikTok suele entregar solo unas 10 recientes.")
     enviar = st.form_submit_button("Consultar", type="primary")
-
+ 
 if enviar:
     try:
         nombre = validar_usuario(usuario)
         if modo_demo:
-            resultado = datos_demo(nombre, cantidad)
+            resultado = datos_demo(nombre, int(cantidad))
         else:
-            with st.status("Consultando TikTok… puede tardar un par de minutos.", expanded=True) as estado:
-                resultado = consultar(nombre, cantidad, incluir_comentarios, mostrar_navegador)
+            with st.status("Consultando TikTok… Si aparece una verificación en la ventana, resuélvela tú "
+                           "(hay hasta 3 minutos).", expanded=True) as estado:
+                resultado = consultar(nombre, int(cantidad), incluir_comentarios,
+                                      int(comentarios_por_post), mostrar_navegador)
                 estado.update(label="Consulta terminada", state="complete", expanded=False)
         st.session_state["resultado"] = resultado
     except ErrorScrape as error:
         st.session_state.pop("resultado", None)
         st.error(str(error))
-
+ 
 resultado = st.session_state.get("resultado")
 if resultado:
     es_demo = resultado["fuente"] == "demo"

@@ -1,9 +1,11 @@
 """Interfaz de ScrapeTikTok. Ejecutar con: streamlit run app.py"""
 from datetime import datetime, timezone
  
+import pandas as pd  # ya viene instalado con Streamlit
 import streamlit as st
  
-from analisis import MODELOS, RASGOS, ErrorAnalisis, analizar, preparar_textos
+from analisis import (MODELOS, RASGOS, SENTIMIENTOS, ErrorAnalisis, analizar, armar_resumen, calcular_estadisticas,
+                      clasificar_comentarios, generar_recomendaciones, nombre_tema, porcentaje, preparar_textos)
 from scraper import MAX_COMENTARIOS, MAX_PUBLICACIONES, ErrorScrape, consultar, validar_usuario
  
 st.set_page_config(page_title="ScrapeTikTok", page_icon="🎵", layout="centered")
@@ -100,8 +102,10 @@ def mostrar_rasgos(analisis, tipo):
         st.caption(rasgo["justificacion"])
  
  
-def mostrar_dashboard(resultado):
-    st.subheader("🧠 Análisis Big Five")
+def mostrar_bigfive(resultado):
+    if not resultado:
+        st.info("Pulsa «🧠 Analizar Big Five» para ver el perfil de la audiencia y del creador.")
+        return
     st.caption("Estimación aproximada del lenguaje hecha por un modelo local. No es un test psicométrico "
                "ni un diagnóstico, y los comentarios son de la audiencia, no del dueño de la cuenta.")
     tab_audiencia, tab_creador = st.tabs(["👥 Audiencia (comentarios)", "✍️ Creador (descripciones)"])
@@ -117,6 +121,92 @@ def mostrar_dashboard(resultado):
             st.info("Hay muy pocas descripciones (mínimo 3) para analizar al creador.")
  
  
+COLORES = ["#2ecc71", "#e74c3c", "#95a5a6"]  # positivo, negativo, neutral (mismo orden que SENTIMIENTOS)
+ 
+ 
+def grafico_sentimientos(datos, etiqueta):
+    """Barras apiladas por sentimiento. `datos`: {clave: {sentimiento: cantidad}}."""
+    tabla = pd.DataFrame({s.capitalize(): [v.get(s, 0) for v in datos.values()] for s in SENTIMIENTOS},
+                         index=[etiqueta(k) for k in datos])
+    st.bar_chart(tabla, color=COLORES)
+ 
+ 
+def lista_comentarios(lista, vacio):
+    """Muestra comentarios con sus likes. No se muestra el nombre de usuario (privacidad)."""
+    if not lista:
+        st.info(vacio)
+    for c in lista:
+        st.text(c["texto"])
+        st.caption(f"👍 {numero_txt(c['likes'])} · Publicación {c['publicacion']} · Tema: {nombre_tema(c['tema'])}")
+ 
+ 
+def sin_datos(negocio):
+    if negocio:
+        return False
+    st.info("Pulsa «📈 Analizar comentarios» para clasificar los comentarios con el modelo local.")
+    return True
+ 
+ 
+def mostrar_resumen(negocio):
+    if sin_datos(negocio):
+        return
+    est, n = negocio["estadisticas"], negocio["estadisticas"]["n"]
+    if negocio["aviso"]:
+        st.warning(negocio["aviso"])
+    if n < 30:
+        st.warning("Muestra pequeña: las estadísticas son orientativas.")
+    st.caption(f"Clasificación automática con {negocio['modelo']}"
+               + (f" · Marca/campaña: {negocio['marca']}" if negocio["marca"] else "")
+               + ". Puede equivocarse con sarcasmo o jerga.")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Comentarios", n)
+    for columna, sentimiento, titulo in zip((c2, c3, c4), SENTIMIENTOS, ("Positivos", "Negativos", "Neutrales")):
+        cantidad = est["sentimiento"].get(sentimiento, 0)
+        columna.metric(titulo, f"{porcentaje(cantidad, n)} %", f"{cantidad} comentarios", delta_color="off")
+    st.info(negocio["resumen"])
+    st.markdown("##### Tipo de comentario")
+    st.bar_chart(pd.DataFrame({"Comentarios": est["tipo"]}))
+    st.markdown("##### Sentimiento por publicación")
+    grafico_sentimientos(dict(sorted(est["por_publicacion"].items())), lambda p: f"Pub. {p:02d}")
+ 
+ 
+def mostrar_temas(negocio):
+    if sin_datos(negocio):
+        return
+    st.markdown("##### Temas más frecuentes (coloreados por sentimiento)")
+    datos = dict(sorted(negocio["estadisticas"]["tema_sentimiento"].items(), key=lambda x: -sum(x[1].values())))
+    grafico_sentimientos(datos, nombre_tema)
+ 
+ 
+def mostrar_opiniones(negocio):
+    if sin_datos(negocio):
+        return
+    est = negocio["estadisticas"]
+    st.markdown("##### 😠 Quejas más relevantes")
+    lista_comentarios(est["quejas"], "No se detectaron quejas.")
+    st.markdown("##### 😍 Elogios más relevantes")
+    lista_comentarios(est["elogios"], "No se detectaron elogios.")
+    st.markdown("##### 💡 Sugerencias")
+    lista_comentarios(est["sugerencias"], "No se detectaron sugerencias.")
+    st.caption("Los más relevantes son los que tienen más «me gusta».")
+ 
+ 
+def mostrar_preguntas(negocio):
+    if sin_datos(negocio):
+        return
+    st.markdown("##### ❓ Preguntas de los usuarios")
+    lista_comentarios(negocio["estadisticas"]["preguntas"], "No se detectaron preguntas.")
+ 
+ 
+def mostrar_recomendaciones(negocio):
+    if sin_datos(negocio):
+        return
+    st.markdown("##### 💡 Recomendaciones basadas en los datos")
+    for recomendacion in negocio["recomendaciones"]:
+        st.markdown(f"- {recomendacion}")
+    st.caption("Generadas con reglas en Python a partir de los números del análisis; no las inventa el modelo.")
+ 
+ 
 # ------------------------------- Barra lateral ------------------------------ #
 with st.sidebar:
     st.header("Opciones")
@@ -129,12 +219,15 @@ with st.sidebar:
     mostrar_navegador = st.checkbox("Mostrar ventana del navegador",
                                     help="Útil si TikTok pide una verificación: la resuelves tú.")
     st.divider()
-    modelo = st.selectbox("Modelo local (Ollama) para el Big Five", MODELOS)
+    modelo = st.selectbox("Modelo local (Ollama) para el análisis", MODELOS)
+    marca = st.text_input("Marca / producto / campaña (opcional)",
+                          help="Se le indica al modelo para que entienda de qué hablan los comentarios.")
  
 # --------------------------------- Principal -------------------------------- #
 st.title("🎵 ScrapeTikTok")
 st.write("Proyecto académico: consulta las últimas publicaciones públicas de una cuenta de TikTok, "
-         "sus métricas y los comentarios que TikTok permita ver.")
+         "sus métricas y los comentarios que TikTok permita ver, y analiza lo que dicen las personas "
+         "(opiniones, temas, quejas, preguntas y perfil Big Five).")
  
 with st.form("consulta"):
     usuario = st.text_input("Usuario de TikTok", placeholder="@usuario")
@@ -155,10 +248,11 @@ if enviar:
                                       int(comentarios_por_post), mostrar_navegador)
                 estado.update(label="Consulta terminada", state="complete", expanded=False)
         st.session_state["resultado"] = resultado
-        st.session_state.pop("analisis", None)  # un análisis viejo no corresponde a la consulta nueva
+        for clave in ("analisis", "negocio"):  # un análisis viejo no corresponde a la consulta nueva
+            st.session_state.pop(clave, None)
     except ErrorScrape as error:
-        st.session_state.pop("resultado", None)
-        st.session_state.pop("analisis", None)
+        for clave in ("resultado", "analisis", "negocio"):
+            st.session_state.pop(clave, None)
         st.error(str(error))
  
 resultado = st.session_state.get("resultado")
@@ -171,11 +265,38 @@ if resultado:
     for aviso in resultado["avisos"]:
         st.info(aviso)
  
-    # ---- Análisis Big Five con el modelo local ----
-    comentarios = [c["texto"] for p in resultado["publicaciones"] for c in p["comentarios"]]
-    descripciones = [p["descripcion"] for p in resultado["publicaciones"] if p["descripcion"]]
-    if st.button("🧠 Analizar Big Five", type="primary", disabled=es_demo,
-                 help="Solo con datos reales. Usa el modelo local elegido en la barra lateral."):
+    # ---- Análisis con el modelo local ----
+    publicaciones = resultado["publicaciones"]
+    comentarios = [c["texto"] for p in publicaciones for c in p["comentarios"]]
+    comentarios_ricos = [{"texto": c["texto"], "likes": c["likes"] or 0, "publicacion": i}
+                         for i, p in enumerate(publicaciones, start=1) for c in p["comentarios"]]
+    descripciones = [p["descripcion"] for p in publicaciones if p["descripcion"]]
+    col_negocio, col_bigfive = st.columns(2)
+    quiere_negocio = col_negocio.button("📈 Analizar comentarios", type="primary", disabled=es_demo,
+                                        use_container_width=True,
+                                        help="Clasifica cada comentario (sentimiento, tipo y tema) con el modelo local.")
+    quiere_bigfive = col_bigfive.button("🧠 Analizar Big Five", disabled=es_demo, use_container_width=True,
+                                        help="Perfil de la audiencia y del creador. Solo con datos reales.")
+    sin_comentarios = "Tip: marca «Incluir comentarios» y vuelve a consultar para tener textos que analizar."
+ 
+    if quiere_negocio:
+        try:
+            with st.status("Clasificando comentarios con el modelo local… puede tardar varios minutos.",
+                           expanded=True) as estado:
+                barra = st.progress(0.0)
+                clasificados, aviso = clasificar_comentarios(comentarios_ricos, modelo, marca,
+                                                             progreso=lambda hechos, total: barra.progress(hechos / total))
+                estadisticas = calcular_estadisticas(clasificados)
+                estado.update(label="Clasificación terminada", state="complete", expanded=False)
+            st.session_state["negocio"] = {"estadisticas": estadisticas, "resumen": armar_resumen(estadisticas),
+                                           "recomendaciones": generar_recomendaciones(estadisticas),
+                                           "aviso": aviso, "modelo": modelo, "marca": marca.strip()}
+        except ErrorAnalisis as error:
+            st.error(str(error))
+            if not comentarios:
+                st.caption(sin_comentarios)
+ 
+    if quiere_bigfive:
         try:
             with st.status("Analizando con el modelo local… puede tardar de 1 a 3 minutos.",
                            expanded=True) as estado:
@@ -190,11 +311,20 @@ if resultado:
         except ErrorAnalisis as error:
             st.error(str(error))
             if not comentarios:
-                st.caption("Tip: marca «Incluir comentarios» y vuelve a consultar para tener textos que analizar.")
+                st.caption(sin_comentarios)
     if es_demo:
-        st.caption("El análisis Big Five solo está disponible con datos reales.")
-    if "analisis" in st.session_state:
-        mostrar_dashboard(st.session_state["analisis"])
+        st.caption("El análisis de comentarios y el Big Five solo están disponibles con datos reales.")
+ 
+    negocio, bigfive = st.session_state.get("negocio"), st.session_state.get("analisis")
+    if negocio or bigfive:
+        st.subheader("📊 Dashboard")
+        pestanas = st.tabs(["📊 Resumen", "🧩 Temas", "👍 Elogios y quejas", "❓ Preguntas",
+                            "💡 Recomendaciones", "🧠 Big Five"])
+        for pestana, mostrar, datos in zip(pestanas, (mostrar_resumen, mostrar_temas, mostrar_opiniones,
+                                                      mostrar_preguntas, mostrar_recomendaciones, mostrar_bigfive),
+                                           (negocio,) * 5 + (bigfive,)):
+            with pestana:
+                mostrar(datos)
  
     st.divider()
     st.subheader("📱 Publicaciones")

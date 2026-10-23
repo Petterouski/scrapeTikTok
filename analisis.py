@@ -29,6 +29,8 @@ RASGOS = {
     "neuroticismo": "Neuroticismo (inestabilidad emocional)",
 }
 UMBRALES = {"audiencia": (15, 50), "creador": (5, 10)}  # (mínimo para "media", mínimo para "alta")
+def promedio (UMBRALES):
+    return {k: (v[0] + v[1]) / 2 for k, v in UMBRALES.items()}
  
  
 # Listas CERRADAS para clasificar: el modelo solo puede elegir entre estas opciones
